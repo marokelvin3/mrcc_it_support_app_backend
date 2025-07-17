@@ -1,0 +1,3 @@
+Flask==2.3.3 # Or Flask==2.2.5 if you used that version
+Flask-CORS==3.0.10
+gunicorn
