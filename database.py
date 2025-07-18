@@ -4,7 +4,7 @@ import os
 
 DATABASE = 'database.db'
 
-def get_db()
+def get_db():
     conn = sqlite3.connect(DATABASE)
     conn.row_factory = sqlite3.Row # This allows us to access columns by name
     return conn
