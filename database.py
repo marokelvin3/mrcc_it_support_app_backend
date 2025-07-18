@@ -6,13 +6,13 @@ DATABASE = 'database.db'
 
 def get_db():
     conn = sqlite3.connect(DATABASE)
-    conn.row_factory = sqlite3.Row # This allows us to access columns by name
+    conn.row_factory = sqlite3.Row  # Access columns by name
     return conn
 
-def init_db()
-    if os.path.exists(DATABASE)
-        os.remove(DATABASE) # Remove existing db for fresh start in development
-    
+def init_db():
+    if os.path.exists(DATABASE):
+        os.remove(DATABASE)  # Fresh start for development
+
     conn = get_db()
     cursor = conn.cursor()
 
@@ -53,8 +53,8 @@ def init_db()
             issue_type_id INTEGER,
             subject TEXT NOT NULL,
             description TEXT,
-            urgency TEXT NOT NULL DEFAULT 'Medium', -- Low, Medium, High, Critical
-            status TEXT NOT NULL DEFAULT 'Open', -- Open, In Progress, Resolved, Closed
+            urgency TEXT NOT NULL DEFAULT 'Medium',
+            status TEXT NOT NULL DEFAULT 'Open',
             assigned_to_id INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -81,42 +81,40 @@ def init_db()
 
     # Insert initial departments
     departments = [
-        (Radiology,), (Radiotherapy,), (Outpatient Services,),
-        (Inpatient Services,), (IT Department,), (Administration,)
+        ('Radiology',), ('Radiotherapy',), ('Outpatient Services',),
+        ('Inpatient Services',), ('IT Department',), ('Administration',)
     ]
-    cursor.executemany(INSERT OR IGNORE INTO departments (name) VALUES (), departments)
+    cursor.executemany('INSERT OR IGNORE INTO departments (name) VALUES (?)', departments)
 
     # Insert initial issue types
     issue_types = [
-        (Network Issue,), (Printer Issue,), (EMR Issue,),
-        (EMR Service UploadUpdate,), (EMR New User Creation,),
-        (New Email in AD Creation,), (Hardware Issue,), (Software Issue,)
+        ('Network Issue',), ('Printer Issue',), ('EMR Issue',),
+        ('EMR Service UploadUpdate',), ('EMR New User Creation',),
+        ('New Email in AD Creation',), ('Hardware Issue',), ('Software Issue',)
     ]
-    cursor.executemany(INSERT OR IGNORE INTO issue_types (name) VALUES (), issue_types)
+    cursor.executemany('INSERT OR IGNORE INTO issue_types (name) VALUES (?)', issue_types)
 
-    # Insert some default users (for testing)
-    # Admin user
-    admin_password_hash = generate_password_hash(adminpass, salt_length=16) # Stronger salt_length
+    # Insert default users
+    admin_password_hash = generate_password_hash('adminpass', salt_length=16)
     cursor.execute(
-        INSERT OR IGNORE INTO users (username, password_hash, role, department, full_name) VALUES (, , , , ),
-        (it.admin, admin_password_hash, admin, IT Department, IT Lead)
+        'INSERT OR IGNORE INTO users (username, password_hash, role, department, full_name) VALUES (?, ?, ?, ?, ?)',
+        ('it.admin', admin_password_hash, 'admin', 'IT Department', 'IT Lead')
     )
-    
-    # Staff users
-    staff_password_hash = generate_password_hash(staffpass, salt_length=16)
+
+    staff_password_hash = generate_password_hash('staffpass', salt_length=16)
     cursor.execute(
-        INSERT OR IGNORE INTO users (username, password_hash, role, department, full_name) VALUES (, , , , ),
-        (dr.john, staff_password_hash, staff, Radiology, Dr. John Doe)
+        'INSERT OR IGNORE INTO users (username, password_hash, role, department, full_name) VALUES (?, ?, ?, ?, ?)',
+        ('dr.john', staff_password_hash, 'staff', 'Radiology', 'Dr. John Doe')
     )
     cursor.execute(
-        INSERT OR IGNORE INTO users (username, password_hash, role, department, full_name) VALUES (, , , , ),
-        (nurse.mary, staff_password_hash, staff, Inpatient Services, Nurse Mary)
+        'INSERT OR IGNORE INTO users (username, password_hash, role, department, full_name) VALUES (?, ?, ?, ?, ?)',
+        ('nurse.mary', staff_password_hash, 'staff', 'Inpatient Services', 'Nurse Mary')
     )
 
     conn.commit()
     conn.close()
 
-if __name__ == '__main__'
-    print(Initializing database...)
+if __name__ == '__main__':
+    print("Initializing database...")
     init_db()
-    print(Database initialized successfully with default data.)
+    print("Database initialized successfully with default data.")
