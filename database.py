@@ -33,6 +33,7 @@ else:
     pass # Variables for MySQL are not needed here, SQLite uses LOCAL_SQLITE_DB_PATH
 
 def get_db():
+    # This get_db is for direct use by init_db, not Flask's g object
     if IS_MYSQL:
         # Connect to MySQL using PyMySQL
         try:
@@ -60,102 +61,158 @@ def init_db():
         os.remove(LOCAL_SQLITE_DB_PATH)
         print(f"Removed existing SQLite database: {LOCAL_SQLITE_DB_PATH}")
 
-    conn = get_db()
+    conn = get_db() # Get the correct connection (MySQL or SQLite)
     cursor = conn.cursor()
 
-    # --- MySQL-compatible SQL Statements ---
-    # AUTOINCREMENT becomes AUTO_INCREMENT
-    # INTEGER PRIMARY KEY becomes INT PRIMARY KEY
-    # TIMESTAMP DEFAULT CURRENT_TIMESTAMP becomes DATETIME DEFAULT CURRENT_TIMESTAMP
-    # INSERT OR IGNORE becomes INSERT IGNORE (or handled by unique constraints)
+    # Define SQL statements based on database type
+    if IS_MYSQL:
+        # MySQL-specific SQL
+        users_table_sql = '''
+            CREATE TABLE IF NOT EXISTS users (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                username VARCHAR(255) UNIQUE NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                role VARCHAR(50) NOT NULL DEFAULT 'staff', -- 'staff' or 'admin'
+                department VARCHAR(255),
+                full_name VARCHAR(255)
+            );
+        '''
+        departments_table_sql = '''
+            CREATE TABLE IF NOT EXISTS departments (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                name VARCHAR(255) UNIQUE NOT NULL
+            );
+        '''
+        issue_types_table_sql = '''
+            CREATE TABLE IF NOT EXISTS issue_types (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                name VARCHAR(255) UNIQUE NOT NULL
+            );
+        '''
+        tickets_table_sql = '''
+            CREATE TABLE IF NOT EXISTS tickets (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                requester_id INT NOT NULL,
+                department_id INT,
+                issue_type_id INT,
+                subject VARCHAR(255) NOT NULL,
+                description TEXT,
+                urgency VARCHAR(50) NOT NULL DEFAULT 'Medium',
+                status VARCHAR(50) NOT NULL DEFAULT 'Open',
+                assigned_to_id INT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                resolution_notes TEXT,
+                FOREIGN KEY (requester_id) REFERENCES users(id),
+                FOREIGN KEY (department_id) REFERENCES departments(id),
+                FOREIGN KEY (issue_type_id) REFERENCES issue_types(id),
+                FOREIGN KEY (assigned_to_id) REFERENCES users(id)
+            );
+        '''
+        ticket_comments_table_sql = '''
+            CREATE TABLE IF NOT EXISTS ticket_comments (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                ticket_id INT NOT NULL,
+                user_id INT NOT NULL,
+                comment TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (ticket_id) REFERENCES tickets(id),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+        '''
+        insert_ignore_syntax = 'INSERT IGNORE INTO'
+        param_placeholder = '%s'
+    else:
+        # SQLite-specific SQL
+        users_table_sql = '''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'staff', -- 'staff' or 'admin'
+                department TEXT,
+                full_name TEXT
+            );
+        '''
+        departments_table_sql = '''
+            CREATE TABLE IF NOT EXISTS departments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL
+            );
+        '''
+        issue_types_table_sql = '''
+            CREATE TABLE IF NOT EXISTS issue_types (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL
+            );
+        '''
+        tickets_table_sql = '''
+            CREATE TABLE IF NOT EXISTS tickets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                requester_id INTEGER NOT NULL,
+                department_id INTEGER,
+                issue_type_id INTEGER,
+                subject TEXT NOT NULL,
+                description TEXT,
+                urgency TEXT NOT NULL DEFAULT 'Medium',
+                status TEXT NOT NULL DEFAULT 'Open',
+                assigned_to_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                resolution_notes TEXT,
+                FOREIGN KEY (requester_id) REFERENCES users(id),
+                FOREIGN KEY (department_id) REFERENCES departments(id),
+                FOREIGN KEY (issue_type_id) REFERENCES issue_types(id),
+                FOREIGN KEY (assigned_to_id) REFERENCES users(id)
+            );
+        '''
+        ticket_comments_table_sql = '''
+            CREATE TABLE IF NOT EXISTS ticket_comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                comment TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (ticket_id) REFERENCES tickets(id),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+        '''
+        insert_ignore_syntax = 'INSERT OR IGNORE INTO'
+        param_placeholder = '?'
 
-    # Create users table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INT PRIMARY KEY AUTO_INCREMENT,
-            username VARCHAR(255) UNIQUE NOT NULL,
-            password_hash VARCHAR(255) NOT NULL,
-            role VARCHAR(50) NOT NULL DEFAULT 'staff', -- 'staff' or 'admin'
-            department VARCHAR(255),
-            full_name VARCHAR(255)
-        );
-    ''')
-    # Create departments table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS departments (
-            id INT PRIMARY KEY AUTO_INCREMENT,
-            name VARCHAR(255) UNIQUE NOT NULL
-        );
-    ''')
-    # Create issue_types table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS issue_types (
-            id INT PRIMARY KEY AUTO_INCREMENT,
-            name VARCHAR(255) UNIQUE NOT NULL
-        );
-    ''')
-    # Create tickets table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS tickets (
-            id INT PRIMARY KEY AUTO_INCREMENT,
-            requester_id INT NOT NULL,
-            department_id INT,
-            issue_type_id INT,
-            subject VARCHAR(255) NOT NULL,
-            description TEXT,
-            urgency VARCHAR(50) NOT NULL DEFAULT 'Medium',
-            status VARCHAR(50) NOT NULL DEFAULT 'Open',
-            assigned_to_id INT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, -- MySQL specific
-            resolution_notes TEXT,
-            FOREIGN KEY (requester_id) REFERENCES users(id),
-            FOREIGN KEY (department_id) REFERENCES departments(id),
-            FOREIGN KEY (issue_type_id) REFERENCES issue_types(id),
-            FOREIGN KEY (assigned_to_id) REFERENCES users(id)
-        );
-    ''')
-    # Create ticket_comments table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS ticket_comments (
-            id INT PRIMARY KEY AUTO_INCREMENT,
-            ticket_id INT NOT NULL,
-            user_id INT NOT NULL,
-            comment TEXT NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (ticket_id) REFERENCES tickets(id),
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        );
-    ''')
+    # Execute table creation
+    cursor.execute(users_table_sql)
+    cursor.execute(departments_table_sql)
+    cursor.execute(issue_types_table_sql)
+    cursor.execute(tickets_table_sql)
+    cursor.execute(ticket_comments_table_sql)
 
-    # Insert initial departments (using INSERT IGNORE for MySQL)
+    # Insert initial data
     departments_data = [
         ('Radiology',), ('Radiotherapy',), ('Outpatient Services',),
         ('Inpatient Services',), ('IT Department',), ('Administration',)
     ]
-    cursor.executemany('INSERT IGNORE INTO departments (name) VALUES (%s)', departments_data) # %s for PyMySQL
+    cursor.executemany(f'{insert_ignore_syntax} departments (name) VALUES ({param_placeholder})', departments_data)
 
-    # Insert initial issue types
     issue_types_data = [
         ('Network Issue',), ('Printer Issue',), ('EMR Issue',),
         ('EMR Service UploadUpdate',), ('EMR New User Creation',),
         ('New Email in AD Creation',), ('Hardware Issue',), ('Software Issue',)
     ]
-    cursor.executemany('INSERT IGNORE INTO issue_types (name) VALUES (%s)', issue_types_data) # %s for PyMySQL
+    cursor.executemany(f'{insert_ignore_syntax} issue_types (name) VALUES ({param_placeholder})', issue_types_data)
 
-    # Insert default users
     admin_password_hash = generate_password_hash('adminpass', salt_length=16)
     cursor.execute(
-        'INSERT IGNORE INTO users (username, password_hash, role, department, full_name) VALUES (%s, %s, %s, %s, %s)', # %s for PyMySQL
+        f'{insert_ignore_syntax} users (username, password_hash, role, department, full_name) VALUES ({param_placeholder}, {param_placeholder}, {param_placeholder}, {param_placeholder}, {param_placeholder})',
         ('it.admin', admin_password_hash, 'admin', 'IT Department', 'IT Lead')
     )
     staff_password_hash = generate_password_hash('staffpass', salt_length=16)
     cursor.execute(
-        'INSERT IGNORE INTO users (username, password_hash, role, department, full_name) VALUES (%s, %s, %s, %s, %s)', # %s for PyMySQL
+        f'{insert_ignore_syntax} users (username, password_hash, role, department, full_name) VALUES ({param_placeholder}, {param_placeholder}, {param_placeholder}, {param_placeholder}, {param_placeholder})',
         ('dr.john', staff_password_hash, 'staff', 'Radiology', 'Dr. John Doe')
     )
     cursor.execute(
-        'INSERT IGNORE INTO users (username, password_hash, role, department, full_name) VALUES (%s, %s, %s, %s, %s)', # %s for PyMySQL
+        f'{insert_ignore_syntax} users (username, password_hash, role, department, full_name) VALUES ({param_placeholder}, {param_placeholder}, {param_placeholder}, {param_placeholder}, {param_placeholder})',
         ('nurse.mary', staff_password_hash, 'staff', 'Inpatient Services', 'Nurse Mary')
     )
     conn.commit()
