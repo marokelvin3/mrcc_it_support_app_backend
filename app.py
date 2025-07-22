@@ -7,33 +7,41 @@ import secrets
 import datetime # Import datetime for timestamp generation
 
 # NEW IMPORTS FOR DATABASE SWITCHING
-import psycopg2 # For PostgreSQL connection
-from urllib.parse import urlparse # For parsing PostgreSQL URL
+import pymysql # For MySQL connection
+from urllib.parse import urlparse # For parsing the DATABASE_URL
 
-# --- Determine Database Connection ---
+# --- Database Connection Logic ---
+# PythonAnywhere provides DATABASE_URL for MySQL.
+# For local development, we'll use SQLite.
+
+# Get database URL from environment variable (for PythonAnywhere MySQL)
+# If not set, fallback to local SQLite.
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# If DATABASE_URL is not set (e.g., for local development), use local SQLite
-if DATABASE_URL is None:
-    # IMPORTANT: Adjust this path 'database.db' to your ACTUAL local SQLite DB path.
-    # For example:
-    # - If your DB file is 'my_db.db' directly in the Backend folder: 'my_db.db'
-    # - If your DB file is 'data.db' in a 'data' subfolder: 'data/data.db'
-    LOCAL_DATABASE_PATH = 'database.db' # <--- **ADJUST THIS LINE IF YOUR LOCAL DB IS IN A SUBFOLDER**
-    DB_CONNECTION_STRING = LOCAL_DATABASE_PATH
-    IS_POSTGRES = False
+# Determine if we are connecting to MySQL or SQLite
+IS_MYSQL = False
+LOCAL_SQLITE_DB_PATH = 'database.db' # <--- IMPORTANT: Adjust this if your local SQLite is in a subfolder
+
+if DATABASE_URL:
+    # If DATABASE_URL is set, assume it's for MySQL (from PythonAnywhere)
+    IS_MYSQL = True
+    # Parse the URL to get individual connection components for PyMySQL
+    result = urlparse(DATABASE_URL)
+    DB_HOST = result.hostname
+    DB_PORT = result.port or 3306 # Default MySQL port
+    DB_USER = result.username
+    DB_PASSWORD = result.password
+    DB_NAME = result.path[1:] # Remove leading '/'
 else:
-    # For Render deployment, use the PostgreSQL URL
-    DB_CONNECTION_STRING = DATABASE_URL
-    IS_POSTGRES = True
+    # If DATABASE_URL is not set, use local SQLite for development
+    pass # Variables for MySQL are not needed here, SQLite uses LOCAL_SQLITE_DB_PATH
 
 # --- Flask App Configuration ---
 app = Flask(__name__)
 # Generate a secure random key for session management
 app.secret_key = secrets.token_hex(24)
 # Configure session to use filesystem for simplicity in demo.
-# IMPORTANT: For production (like Render), 'filesystem' session will NOT work
-# because Render's filesystem is ephemeral (changes are lost on restart).
+# IMPORTANT: For production, 'filesystem' session will NOT work
 # You'll need to switch to a more robust backend like Flask-Session with Redis,
 # or a database-backed session store.
 app.config['SESSION_TYPE'] = 'filesystem'
@@ -52,44 +60,33 @@ CORS(app, supports_credentials=True, origins=["http://127.0.0.1:5500", "http://l
 
 def get_db():
     if 'db' not in g:
-        if IS_POSTGRES:
-            # Connect to PostgreSQL using psycopg2
+        if IS_MYSQL:
+            # Connect to MySQL using PyMySQL
             try:
-                result = urlparse(DB_CONNECTION_STRING)
-                username = result.username
-                password = result.password
-                database = result.path[1:] # Slice to remove leading '/'
-                hostname = result.hostname
-                port = result.port
-
-                g.db = psycopg2.connect(
-                    database=database,
-                    user=username,
-                    password=password,
-                    host=hostname,
-                    port=port
+                conn = pymysql.connect(
+                    host=DB_HOST,
+                    port=DB_PORT,
+                    user=DB_USER,
+                    password=DB_PASSWORD,
+                    database=DB_NAME,
+                    cursorclass=pymysql.cursors.DictCursor # To get dict-like rows
                 )
+                g.db = conn
             except Exception as e:
-                # Log the error (e.g., print to console, or use Flask's logger)
-                print(f"Error connecting to PostgreSQL: {e}")
-                # You might want to raise an exception or handle this more gracefully
-                # depending on your app's error handling strategy.
-                raise e # Re-raise to stop the request if DB connection fails
+                print(f"Error connecting to MySQL: {e}")
+                raise e
         else:
             # Connect to SQLite for local development
-            g.db = sqlite3.connect(DB_CONNECTION_STRING)
-            g.db.row_factory = sqlite3.Row # Keep for SQLite
-
+            conn = sqlite3.connect(LOCAL_SQLITE_DB_PATH)
+            conn.row_factory = sqlite3.Row # To get dict-like rows for SQLite
+            g.db = conn
     return g.db
 
 @app.teardown_appcontext
 def close_db(e=None):
     db = g.pop('db', None)
     if db is not None:
-        if IS_POSTGRES:
-            db.close() # Close psycopg2 connection
-        else:
-            db.close() # Close sqlite3 connection
+        db.close()
 
 # --- User Management (simplified for demo) ---
 @app.before_request
@@ -99,14 +96,10 @@ def load_logged_in_user():
         g.user = None
     else:
         db = get_db()
-        # IMPORTANT: For PostgreSQL, ensure your table/column names match casing.
-        # PostgreSQL is case-sensitive by default, SQLite is not.
-        # If your table is 'users' and column 'id' in SQLite, keep it that way.
-        g.user = db.execute('SELECT * FROM users WHERE id = %s', (user_id,)).fetchone()
-        # For psycopg2, execute expects %s for parameters, not ?.
-        # Also, fetchone() for psycopg2 returns a tuple by default, not sqlite3.Row (dict-like).
-        # You'll need to adapt how you access g.user, or use psycopg2.extras.RealDictCursor.
-        # For now, let's proceed and see if you hit errors with g.user['role'] etc.
+        # Use %s for PyMySQL, ? for sqlite3
+        param_char = '?' if not IS_MYSQL else '%s'
+        g.user = db.execute(f'SELECT * FROM users WHERE id = {param_char}', (user_id,)).fetchone()
+
 
 def login_required(view):
     """Decorator to require login for a route."""
@@ -123,7 +116,7 @@ def admin_required(view):
     import functools
     @functools.wraps(view)
     def wrapped_view(**kwargs):
-        if g.user is None or g.user['role'] != 'admin': # This access might break with psycopg2's default fetchone()
+        if g.user is None or g.user['role'] != 'admin':
             return jsonify({'message': 'Admin privilege required'}), 403
         return view(**kwargs)
     return wrapped_view
@@ -147,8 +140,8 @@ def register():
     hashed_password = generate_password_hash(password, salt_length=16)
 
     try:
-        # Use %s for psycopg2, ? for sqlite3
-        param_char = '?' if not IS_POSTGRES else '%s'
+        # Use %s for PyMySQL, ? for sqlite3
+        param_char = '?' if not IS_MYSQL else '%s'
         db.execute(
             f"INSERT INTO users (username, password_hash, role, department, full_name) VALUES ({param_char}, {param_char}, {param_char}, {param_char}, {param_char})",
             (username, hashed_password, role, department, full_name)
@@ -156,9 +149,10 @@ def register():
         db.commit()
         return jsonify({'message': 'User registered successfully'}), 201
     except Exception as e: # Catch all exceptions for now to see specific errors
-        if IS_POSTGRES and 'unique' in str(e).lower() and 'username' in str(e).lower():
+        # Check for unique constraint error (MySQL vs SQLite)
+        if IS_MYSQL and "Duplicate entry" in str(e) and "for key 'users.username'" in str(e):
             return jsonify({'message': 'Username already exists'}), 409
-        elif not IS_POSTGRES and isinstance(e, sqlite3.IntegrityError):
+        elif not IS_MYSQL and isinstance(e, sqlite3.IntegrityError):
             return jsonify({'message': 'Username already exists'}), 409
         return jsonify({'message': f'Error registering user: {str(e)}'}), 500
 
@@ -169,14 +163,10 @@ def login():
     username = data.get('username')
     password = data.get('password')
 
-    # Use %s for psycopg2, ? for sqlite3
-    param_char = '?' if not IS_POSTGRES else '%s'
+    # Use %s for PyMySQL, ? for sqlite3
+    param_char = '?' if not IS_MYSQL else '%s'
     user = db.execute(f'SELECT * FROM users WHERE username = {param_char}', (username,)).fetchone()
 
-    # IMPORTANT: If user is a tuple (from psycopg2), you'll need to access elements by index
-    # instead of by name, e.g., user[column_index_for_password_hash]
-    # To fix this, you'll need to use psycopg2.extras.RealDictCursor in get_db for postgres
-    # For now, let's assume it works, but be aware.
     if user and check_password_hash(user['password_hash'], password):
         session.clear()
         session['user_id'] = user['id']
@@ -248,7 +238,8 @@ def create_ticket():
         return jsonify({'message': 'Missing required fields'}), 400
 
     try:
-        param_char = '?' if not IS_POSTGRES else '%s'
+        param_char = '?' if not IS_MYSQL else '%s'
+        # For MySQL, lastrowid might be accessed via cursor.lastrowid after execute
         cursor = db.execute(
             f"INSERT INTO tickets (requester_id, department_id, issue_type_id, subject, description, urgency) VALUES ({param_char}, {param_char}, {param_char}, {param_char}, {param_char}, {param_char})",
             (requester_id, department_id, issue_type_id, subject, description, urgency)
@@ -263,9 +254,9 @@ def create_ticket():
 def get_my_tickets():
     db = get_db()
     user_id = g.user['id']
-    # Use %s for psycopg2, ? for sqlite3, and CURRENT_TIMESTAMP for SQL function
-    param_char = '?' if not IS_POSTGRES else '%s'
-    timestamp_func = 'CURRENT_TIMESTAMP' if not IS_POSTGRES else 'NOW()' # PostgreSQL uses NOW()
+    # Use %s for PyMySQL, ? for sqlite3, and NOW() for MySQL timestamp
+    param_char = '?' if not IS_MYSQL else '%s'
+    timestamp_func = 'CURRENT_TIMESTAMP' if not IS_MYSQL else 'NOW()' # MySQL uses NOW() or CURRENT_TIMESTAMP
 
     tickets = db.execute(
         f'''
@@ -295,9 +286,8 @@ def get_all_tickets():
     issue_type_filter = request.args.get('issue_type_id')
     search_query = request.args.get('search')
 
-    # Use %s for psycopg2, ? for sqlite3
-    param_char = '?' if not IS_POSTGRES else '%s'
-    like_char = '?' if not IS_POSTGRES else '%s' # For LIKE clauses, parameter style is same
+    # Use %s for PyMySQL, ? for sqlite3
+    param_char = '?' if not IS_MYSQL else '%s'
 
     query = f'''
         SELECT
@@ -326,7 +316,7 @@ def get_all_tickets():
         conditions.append(f"t.issue_type_id = {param_char}")
         params.append(issue_type_filter)
     if search_query:
-        conditions.append(f"(t.subject LIKE {like_char} OR t.description LIKE {like_char} OR u_req.full_name LIKE {like_char})")
+        conditions.append(f"(t.subject LIKE {param_char} OR t.description LIKE {param_char} OR u_req.full_name LIKE {param_char})")
         params.extend([f'%{search_query}%', f'%{search_query}%', f'%{search_query}%'])
 
     if conditions:
@@ -342,7 +332,7 @@ def get_all_tickets():
 @login_required
 def get_ticket_details(ticket_id):
     db = get_db()
-    param_char = '?' if not IS_POSTGRES else '%s'
+    param_char = '?' if not IS_MYSQL else '%s'
     ticket = db.execute(
         f'''
         SELECT
@@ -366,12 +356,10 @@ def get_ticket_details(ticket_id):
         return jsonify({'message': 'Ticket not found'}), 404
 
     # Check if the user is authorized to view this ticket
-    # IMPORTANT: This assumes g.user is dict-like. If psycopg2 returns tuple, this will break.
-    # We might need psycopg2.extras.RealDictCursor or convert tuple to dict.
     if g.user['role'] == 'staff' and g.user['id'] != ticket['requester_id']:
         return jsonify({'message': 'Unauthorized to view this ticket'}), 403
 
-    param_char = '?' if not IS_POSTGRES else '%s'
+    param_char = '?' if not IS_MYSQL else '%s'
     comments = db.execute(
         f'''
         SELECT tc.comment, tc.created_at, u.full_name AS commenter_name
@@ -381,8 +369,8 @@ def get_ticket_details(ticket_id):
         ''', (ticket_id,)
     ).fetchall()
 
-    ticket_dict = dict(ticket) # This conversion assumes ticket is sqlite3.Row or dict-like
-    ticket_dict['comments'] = [dict(c) for c in comments] # This conversion assumes comments are sqlite3.Row or dict-like
+    ticket_dict = dict(ticket)
+    ticket_dict['comments'] = [dict(c) for c in comments]
     return jsonify(ticket_dict)
 
 @app.route('/api/tickets/<int:ticket_id>', methods=['PUT'])
@@ -398,9 +386,8 @@ def update_ticket(ticket_id):
     update_fields = []
     params = []
 
-    # Use %s for psycopg2, ? for sqlite3
-    param_char = '?' if not IS_POSTGRES else '%s'
-    timestamp_func = 'CURRENT_TIMESTAMP' if not IS_POSTGRES else 'NOW()' # PostgreSQL uses NOW()
+    param_char = '?' if not IS_MYSQL else '%s'
+    timestamp_func = 'CURRENT_TIMESTAMP' if not IS_MYSQL else 'NOW()' # MySQL uses NOW() or CURRENT_TIMESTAMP
 
     if status:
         update_fields.append(f"status = {param_char}")
@@ -422,7 +409,7 @@ def update_ticket(ticket_id):
 
     try:
         cursor = db.execute(query, tuple(params))
-        db.commit() # Commit after execute
+        db.commit()
         if cursor.rowcount == 0:
             return jsonify({'message': 'Ticket not found or no changes made'}), 404
         return jsonify({'message': 'Ticket updated successfully'}), 200
@@ -442,17 +429,17 @@ def add_comment_to_ticket(ticket_id):
         return jsonify({'message': 'Comment text is required'}), 400
 
     # Optional: Check if ticket exists and user is related (requester or admin)
-    param_char = '?' if not IS_POSTGRES else '%s'
+    param_char = '?' if not IS_MYSQL else '%s'
     ticket = db.execute(f'SELECT requester_id FROM tickets WHERE id = {param_char}', (ticket_id,)).fetchone()
     if not ticket:
         return jsonify({'message': 'Ticket not found'}), 404
 
-    # IMPORTANT: This assumes ticket is dict-like. If psycopg2 returns tuple, this will break.
     if g.user['role'] == 'staff' and g.user['id'] != ticket['requester_id']:
         return jsonify({'message': 'Unauthorized to comment on this ticket'}), 403
 
+
     try:
-        param_char = '?' if not IS_POSTGRES else '%s'
+        param_char = '?' if not IS_MYSQL else '%s'
         cursor = db.execute(
             f"INSERT INTO ticket_comments (ticket_id, user_id, comment) VALUES ({param_char}, {param_char}, {param_char})",
             (ticket_id, user_id, comment_text)
@@ -481,7 +468,7 @@ def update_user(user_id):
     update_fields = []
     params = []
 
-    param_char = '?' if not IS_POSTGRES else '%s'
+    param_char = '?' if not IS_MYSQL else '%s'
 
     if role:
         update_fields.append(f"role = {param_char}")
@@ -509,9 +496,7 @@ def update_user(user_id):
         return jsonify({'message': f'Error updating user: {str(e)}'}), 500
 
 # --- Initial DB setup run on app startup (for dev) ---
-with app.app_context():
-    from database import init_db
-    init_db()
+# REMOVED: with app.app_context(): from database import init_db; init_db()
 
 if __name__ == '__main__':
     # It's recommended to run Flask in production with a WSGI server like Gunicorn or uWSGI

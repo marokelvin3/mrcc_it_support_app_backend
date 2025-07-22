@@ -3,3 +3,4 @@ Flask-CORS
 gunicorn
 psycopg2-binary
 Werkzeug
+PyMySQL
